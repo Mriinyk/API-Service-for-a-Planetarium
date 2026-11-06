@@ -3,8 +3,14 @@ from django.db.models import Count
 from rest_framework import generics, viewsets
 from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 
-from .models import AstronomyShow, PlanetariumDome, Reservation, ShowSession, ShowTheme
-from .serializers import (
+from service_for_a_planetarium.models import (
+    AstronomyShow,
+    PlanetariumDome,
+    Reservation,
+    ShowSession,
+    ShowTheme,
+)
+from service_for_a_planetarium.serializers import (
     AstronomyShowSerializer,
     PlanetariumDomeSerializer,
     ReservationSerializer,
