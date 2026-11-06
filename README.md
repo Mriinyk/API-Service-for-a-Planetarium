@@ -41,6 +41,20 @@ The service will be available at `http://localhost:8000`. The SQLite database is
 docker compose exec api python manage.py createsuperuser
 ```
 
+The published image is available on Docker Hub:
+
+```powershell
+docker pull mriinyk/api-service-for-a-planetarium:latest
+docker run --rm -p 8000:8000 `
+  -e DJANGO_SECRET_KEY=change-this-secret `
+  -e DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1 `
+  -e DJANGO_DB_PATH=/app/data/db.sqlite3 `
+  -v planetarium_data:/app/data `
+  mriinyk/api-service-for-a-planetarium:latest
+```
+
+The container applies Django migrations at startup. Its SQLite database is stored in the `planetarium_data` volume.
+
 ## Authentication
 
 1. `POST /api/auth/register/` with `{"username":"viewer","email":"viewer@example.com","password":"strong-password"}`.
@@ -58,7 +72,7 @@ docker compose exec api python manage.py createsuperuser
 | Reservations | `/api/reservations/` |
 | Schema / Swagger | `/api/schema/`, `/api/docs/` |
 
-Use `?search=...` for show search, `?themes=<id>` for show filtering, and `?astronomy_show=<id>`, `?planetarium_dome=<id>`, or `?ordering=show_time` for sessions. Creating catalog entries requires authentication; in a real deployment, restrict catalog writes to staff users.
+Use `?search=...` for show search, `?themes=<id>` for show filtering, and `?astronomy_show=<id>`, `?planetarium_dome=<id>`, or `?ordering=show_time` for sessions. Browsing is public; catalog changes require a staff account.
 
 Create a reservation with a list of tickets:
 

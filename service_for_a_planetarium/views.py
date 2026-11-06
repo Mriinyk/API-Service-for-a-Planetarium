@@ -55,6 +55,7 @@ class ShowSessionViewSet(ReadOnlyOrAdmin):
 
 
 class ReservationViewSet(viewsets.ModelViewSet):
+    queryset = Reservation.objects.all()
     serializer_class = ReservationSerializer
     permission_classes = (IsAuthenticated,)
     http_method_names = ("get", "post", "head", "options", "delete")

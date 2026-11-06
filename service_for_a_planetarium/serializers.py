@@ -64,8 +64,11 @@ class ShowSessionSerializer(serializers.ModelSerializer):
             "planetarium_dome_name", "show_time", "available_seats",
         )
 
-    def get_available_seats(self, obj):
-        return obj.planetarium_dome.capacity - obj.tickets.count()
+    def get_available_seats(self, obj) -> int:
+        booked = getattr(obj, "_ticket_count", None)
+        if booked is None:
+            booked = obj.tickets.count()
+        return obj.planetarium_dome.capacity - booked
 
 
 class TicketSerializer(serializers.ModelSerializer):
