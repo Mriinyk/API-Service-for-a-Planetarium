@@ -27,6 +27,8 @@ class RegisterView(generics.CreateAPIView):
 
 
 class ReadOnlyOrAdmin(viewsets.ModelViewSet):
+    ordering = ("id",)
+
     def get_permissions(self):
         if self.action in ("list", "retrieve"):
             return [AllowAny()]
@@ -67,7 +69,9 @@ class ReservationViewSet(viewsets.ModelViewSet):
     http_method_names = ("get", "post", "head", "options", "delete")
 
     def get_queryset(self):
-        queryset = Reservation.objects.prefetch_related("tickets__show_session")
+        queryset = Reservation.objects.prefetch_related(
+            "tickets__show_session"
+        ).order_by("id")
         if self.request.user.is_staff:
             return queryset
         return queryset.filter(user=self.request.user)
