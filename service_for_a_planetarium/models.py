@@ -1,6 +1,9 @@
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models
+from django.db.models import Q
+from django.utils import timezone
 
 
 class ShowTheme(models.Model):
@@ -41,6 +44,13 @@ class ShowSession(models.Model):
     )
     show_time = models.DateTimeField()
 
+    def clean(self):
+        super().clean()
+        if self.show_time and self.show_time <= timezone.now():
+            raise ValidationError(
+                {"show_time": "Session must be scheduled in the future."}
+            )
+
     class Meta:
         ordering = ["show_time"]
 
@@ -70,10 +80,26 @@ class Ticket(models.Model):
 
     class Meta:
         constraints = [
+            models.CheckConstraint(condition=Q(row__gte=1), name="ticket_row_gte_1"),
+            models.CheckConstraint(condition=Q(seat__gte=1), name="ticket_seat_gte_1"),
             models.UniqueConstraint(
                 fields=["show_session", "row", "seat"], name="unique_seat_per_session"
             )
         ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.show_session_id:
+            dome = self.show_session.planetarium_dome
+            if self.row is not None and not 1 <= self.row <= dome.rows:
+                errors["row"] = "Row must be within the dome's row count."
+            if self.seat is not None and not 1 <= self.seat <= dome.seats_in_row:
+                errors["seat"] = "Seat must be within the dome's seat count."
+            if self.show_session.show_time <= timezone.now():
+                errors["show_session"] = "Tickets can only be booked for future sessions."
+        if errors:
+            raise ValidationError(errors)
 
     def __str__(self):
         return f"{self.show_session}: row {self.row}, seat {self.seat}"

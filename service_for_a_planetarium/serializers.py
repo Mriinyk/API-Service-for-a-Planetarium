@@ -1,9 +1,11 @@
 from django.contrib.auth import get_user_model
-from django.db import transaction
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework import serializers
 
-from .models import (
+from service_for_a_planetarium.models import (
     AstronomyShow,
     PlanetariumDome,
     Reservation,
@@ -21,6 +23,14 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ("id", "username", "email", "password")
+
+    def validate_password(self, value):
+        user = User(username=self.initial_data.get("username", ""))
+        try:
+            validate_password(value, user=user)
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(error.messages) from error
+        return value
 
     def create(self, validated_data):
         return User.objects.create_user(**validated_data)
@@ -64,14 +74,15 @@ class ShowSessionSerializer(serializers.ModelSerializer):
             "planetarium_dome_name", "show_time", "available_seats",
         )
 
-    def get_available_seats(self, obj):
-        return obj.planetarium_dome.capacity - obj.tickets.count()
+    def get_available_seats(self, obj) -> int:
+        return max(0, obj.planetarium_dome.capacity - obj._ticket_count)
 
 
 class TicketSerializer(serializers.ModelSerializer):
     class Meta:
         model = Ticket
         fields = ("id", "row", "seat", "show_session")
+        validators = []
 
     def validate(self, attrs):
         session = attrs["show_session"]
@@ -83,6 +94,14 @@ class TicketSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("This seat has already been booked.")
         if session.show_time <= timezone.now():
             raise serializers.ValidationError("Tickets can only be booked for future sessions.")
+        try:
+            Ticket(
+                row=row,
+                seat=seat,
+                show_session=session,
+            ).full_clean(exclude=("reservation",))
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(error.message_dict) from error
         return attrs
 
 
@@ -104,8 +123,22 @@ class ReservationSerializer(serializers.ModelSerializer):
         seats = [(item["row"], item["seat"]) for item in ticket_data]
         if len(seats) != len(set(seats)):
             raise serializers.ValidationError({"tickets": "Duplicate seats in this reservation."})
-        with transaction.atomic():
-            reservation = Reservation.objects.create(user=self.context["request"].user)
-            for item in ticket_data:
-                Ticket.objects.create(reservation=reservation, **item)
+        try:
+            with transaction.atomic():
+                reservation = Reservation.objects.create(
+                    user=self.context["request"].user
+                )
+                for item in ticket_data:
+                    ticket = Ticket(reservation=reservation, **item)
+                    try:
+                        ticket.full_clean()
+                    except DjangoValidationError as error:
+                        raise serializers.ValidationError(
+                            {"tickets": error.messages}
+                        ) from error
+                    ticket.save()
+        except IntegrityError as error:
+            raise serializers.ValidationError(
+                {"tickets": "One or more selected seats have already been booked."}
+            ) from error
         return reservation

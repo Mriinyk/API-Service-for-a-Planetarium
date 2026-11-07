@@ -3,8 +3,14 @@ from django.db.models import Count
 from rest_framework import generics, viewsets
 from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 
-from .models import AstronomyShow, PlanetariumDome, Reservation, ShowSession, ShowTheme
-from .serializers import (
+from service_for_a_planetarium.models import (
+    AstronomyShow,
+    PlanetariumDome,
+    Reservation,
+    ShowSession,
+    ShowTheme,
+)
+from service_for_a_planetarium.serializers import (
     AstronomyShowSerializer,
     PlanetariumDomeSerializer,
     ReservationSerializer,
@@ -21,6 +27,8 @@ class RegisterView(generics.CreateAPIView):
 
 
 class ReadOnlyOrAdmin(viewsets.ModelViewSet):
+    ordering = ("id",)
+
     def get_permissions(self):
         if self.action in ("list", "retrieve"):
             return [AllowAny()]
@@ -55,12 +63,15 @@ class ShowSessionViewSet(ReadOnlyOrAdmin):
 
 
 class ReservationViewSet(viewsets.ModelViewSet):
+    queryset = Reservation.objects.all()
     serializer_class = ReservationSerializer
     permission_classes = (IsAuthenticated,)
     http_method_names = ("get", "post", "head", "options", "delete")
 
     def get_queryset(self):
-        queryset = Reservation.objects.prefetch_related("tickets__show_session")
+        queryset = Reservation.objects.prefetch_related(
+            "tickets__show_session"
+        ).order_by("id")
         if self.request.user.is_staff:
             return queryset
         return queryset.filter(user=self.request.user)

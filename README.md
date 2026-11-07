@@ -1,66 +1,82 @@
 # Planetarium API
 
-REST API for managing astronomy shows, show themes, planetarium domes, sessions, reservations and seats. Built with Django REST Framework.
+REST API for managing astronomy shows, themes, planetarium domes, sessions, reservations and seats, built with Django REST Framework.
 
 ## Features
 
-- JWT registration, access and refresh tokens.
-- Browse shows, themes, domes and sessions without signing in; filter and search listings.
-- Authenticated users can create and view their reservations. Staff can view all reservations.
-- Seat validation checks dome dimensions, duplicate bookings and future session times.
-- Session availability and dome capacity are returned by the API.
+- JWT registration and access/refresh tokens.
+- Public, paginated show, theme, dome and session listings with search, filters and ordering.
+- Staff-only catalogue management; authenticated reservations are private to their owner (staff can inspect all reservations).
+- Seat bounds, future-session, duplicate-seat and duplicate-in-reservation validation.
+- Atomic reservation creation with database uniqueness protection against simultaneous booking conflicts.
+- Dome capacity and live session availability in API responses.
 - Django admin and interactive Swagger documentation.
 
-## Run locally (Windows PowerShell)
+## Run locally
 
-Python 3.12+ is recommended. The default database is SQLite; no separate database server is required.
+Python 3.12+ is recommended. SQLite is the default database, so no database server is needed.
+
+### Windows PowerShell
 
 ```powershell
-py -m venv venv
-.\venv\Scripts\Activate.ps1
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-Copy-Item .env.example .env
 python manage.py migrate
 python manage.py createsuperuser
 python manage.py runserver
 ```
 
-Open `http://127.0.0.1:8000/api/docs/` for Swagger, `http://127.0.0.1:8000/admin/` for the admin panel, or `http://127.0.0.1:8000/api/` for the API root.
+### macOS / Linux
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python manage.py migrate
+python manage.py createsuperuser
+python manage.py runserver
+```
+
+The API is at `http://127.0.0.1:8000/api/`, Swagger at `http://127.0.0.1:8000/api/docs/`, and admin at `http://127.0.0.1:8000/admin/`.
+
+For local overrides, create `.env` with `DJANGO_SECRET_KEY`, `DJANGO_DEBUG`, and `DJANGO_ALLOWED_HOSTS`. The development defaults are suitable only for local use.
 
 ## Docker
 
-Docker Desktop and Docker Compose are required.
+Install Docker Desktop (Windows/macOS) or Docker Engine and the Compose plugin (Linux), then run:
 
-```powershell
+```bash
 docker compose up --build
 ```
 
-The service will be available at `http://localhost:8000`. The SQLite database is persisted in the `planetarium_data` volume. Create an admin account inside the running container with:
+The API will be available at `http://localhost:8000`. SQLite data is persisted in the `planetarium_data` volume. In another terminal, create an admin account:
 
-```powershell
+```bash
 docker compose exec api python manage.py createsuperuser
 ```
 
-## Authentication
+To run the published image directly:
 
-1. `POST /api/auth/register/` with `{"username":"viewer","email":"viewer@example.com","password":"strong-password"}`.
-2. `POST /api/auth/token/` with username and password to receive `access` and `refresh` tokens.
-3. Send `Authorization: Bearer <access>` on protected requests. Refresh an access token at `POST /api/auth/token/refresh/`.
+```bash
+docker pull mriinyk/api-service-for-a-planetarium:latest
+docker run --rm -p 8000:8000 \
+  -e DJANGO_SECRET_KEY=change-this-secret \
+  -e DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1 \
+  -e DJANGO_DB_PATH=/app/data/db.sqlite3 \
+  -v planetarium_data:/app/data \
+  mriinyk/api-service-for-a-planetarium:latest
+```
 
-## API endpoints
+The container applies migrations when it starts.
 
-| Resource | Endpoints |
-| --- | --- |
-| Themes | `/api/themes/` |
-| Astronomy shows | `/api/astronomy-shows/` |
-| Domes | `/api/domes/` |
-| Sessions | `/api/sessions/` |
-| Reservations | `/api/reservations/` |
-| Schema / Swagger | `/api/schema/`, `/api/docs/` |
+## Authentication and booking
 
-Use `?search=...` for show search, `?themes=<id>` for show filtering, and `?astronomy_show=<id>`, `?planetarium_dome=<id>`, or `?ordering=show_time` for sessions. Creating catalog entries requires authentication; in a real deployment, restrict catalog writes to staff users.
-
-Create a reservation with a list of tickets:
+1. Register with `POST /api/auth/register/`, for example:
+   `{"username":"viewer","email":"viewer@example.com","password":"a-strong-password"}`.
+2. Get JWT tokens from `POST /api/auth/token/` using username and password.
+3. Send `Authorization: Bearer <access>` on protected requests; refresh at `POST /api/auth/token/refresh/`.
+4. Create a reservation with `POST /api/reservations/`:
 
 ```json
 {
@@ -71,6 +87,24 @@ Create a reservation with a list of tickets:
 }
 ```
 
-## Configuration
+A reservation must contain at least one ticket, all tickets must belong to one future session, and each seat can be booked only once for that session.
 
-Copy `.env.example` to `.env` for local settings. `DJANGO_SECRET_KEY` must be replaced with a private random value before deployment. Set `DJANGO_DEBUG=0` and configure `DJANGO_ALLOWED_HOSTS` outside development.
+## API endpoints
+
+| Resource | Endpoints |
+| --- | --- |
+| Registration / JWT | `/api/auth/register/`, `/api/auth/token/`, `/api/auth/token/refresh/` |
+| Themes | `/api/themes/` |
+| Astronomy shows | `/api/astronomy-shows/` |
+| Domes | `/api/domes/` |
+| Sessions | `/api/sessions/` |
+| Reservations | `/api/reservations/` |
+| Schema / Swagger | `/api/schema/`, `/api/docs/` |
+
+Results are paginated (20 per page). Use `?search=...` on astronomy shows, `?themes=<id>` to filter shows, and `?astronomy_show=<id>`, `?planetarium_dome=<id>`, `?ordering=show_time`, or `?page=2` for sessions.
+
+## Tests
+
+```bash
+python manage.py test service_for_a_planetarium
+```
