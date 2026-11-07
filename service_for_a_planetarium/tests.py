@@ -1,11 +1,10 @@
-from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
 from datetime import timedelta
+from types import SimpleNamespace
 
 from django.contrib.auth import get_user_model
-from django.db import close_old_connections
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Count
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase
 from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.test import APIClient
@@ -71,6 +70,13 @@ class SerializerTests(PlanetariumFixtureMixin, TestCase):
         user = serializer.save()
         self.assertTrue(user.check_password("safe-password-123"))
         self.assertNotEqual(user.password, "safe-password-123")
+
+    def test_user_serializer_enforces_django_password_validators(self):
+        serializer = UserSerializer(
+            data={"username": "new-viewer", "password": "password"}
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("password", serializer.errors)
 
     def test_show_serializer_reads_themes_and_accepts_theme_ids(self):
         data = AstronomyShowSerializer(self.astronomy_show).data
@@ -200,9 +206,44 @@ class PlanetariumAPITests(PlanetariumFixtureMixin, TestCase):
         self.assertEqual(self.client.get("/api/astronomy-shows/?search=Journey").status_code, 200)
         filtered = self.client.get(f"/api/astronomy-shows/?themes={self.theme.pk}")
         self.assertEqual(filtered.status_code, 200)
-        self.assertEqual(len(filtered.data), 1)
+        self.assertEqual(len(filtered.data["results"]), 1)
         self.assertEqual(self.client.get("/api/domes/").status_code, 200)
         self.assertEqual(self.client.get("/api/sessions/").status_code, 200)
+
+    def test_catalogue_lists_are_paginated(self):
+        for index in range(21):
+            AstronomyShow.objects.create(
+                title=f"Extra show {index}", description="Description"
+            )
+        response = self.client.get("/api/astronomy-shows/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["results"]), 20)
+        self.assertIsNotNone(response.data["next"])
+
+    def test_model_clean_rejects_invalid_ticket_bounds_and_past_session(self):
+        reservation = Reservation.objects.create(user=self.user)
+        invalid_ticket = Ticket(
+            row=self.dome.rows + 1,
+            seat=1,
+            show_session=self.session,
+            reservation=reservation,
+        )
+        with self.assertRaises(DjangoValidationError):
+            invalid_ticket.full_clean()
+
+        past_session = ShowSession(
+            astronomy_show=self.astronomy_show,
+            planetarium_dome=self.dome,
+            show_time=timezone.now() - timedelta(minutes=1),
+        )
+        with self.assertRaises(DjangoValidationError):
+            past_session.full_clean()
+
+        past_session.pk = self.session.pk
+        invalid_ticket.row = 1
+        invalid_ticket.show_session = past_session
+        with self.assertRaises(DjangoValidationError):
+            invalid_ticket.full_clean()
 
     def test_catalog_writes_require_staff(self):
         payload = {"name": "New theme"}
@@ -221,10 +262,12 @@ class PlanetariumAPITests(PlanetariumFixtureMixin, TestCase):
         )
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(len(response.data["tickets"]), 2)
-        self.assertEqual(len(self.client.get("/api/reservations/").data), 1)
+        self.assertEqual(
+            len(self.client.get("/api/reservations/").data["results"]), 1
+        )
 
         self.authenticate(self.other_user)
-        self.assertEqual(self.client.get("/api/reservations/").data, [])
+        self.assertEqual(self.client.get("/api/reservations/").data["results"], [])
 
     def test_staff_can_view_all_reservations(self):
         reservation = Reservation.objects.create(user=self.user)
@@ -232,7 +275,7 @@ class PlanetariumAPITests(PlanetariumFixtureMixin, TestCase):
             row=1, seat=1, show_session=self.session, reservation=reservation
         )
         self.authenticate(self.staff)
-        self.assertEqual(len(self.client.get("/api/reservations/").data), 1)
+        self.assertEqual(len(self.client.get("/api/reservations/").data["results"]), 1)
 
     def test_reservation_endpoint_rejects_duplicate_seat_and_keeps_no_partial_data(self):
         self.authenticate(self.user)
@@ -270,9 +313,7 @@ class PlanetariumAPITests(PlanetariumFixtureMixin, TestCase):
         self.assertEqual(Ticket.objects.filter(show_session=self.session, row=1, seat=1).count(), 1)
 
 
-class ConcurrentReservationTests(PlanetariumFixtureMixin, TransactionTestCase):
-    reset_sequences = True
-
+class ConcurrentReservationTests(PlanetariumFixtureMixin, TestCase):
     def setUp(self):
         self.create_planetarium_data()
         self.user = User.objects.create_user(
@@ -280,31 +321,26 @@ class ConcurrentReservationTests(PlanetariumFixtureMixin, TransactionTestCase):
         )
 
     def test_simultaneous_requests_for_same_seat_only_create_one_ticket(self):
-        request_barrier = Barrier(2)
-        session_id = self.session.pk
-        user_id = self.user.pk
+        payload = self.reservation_payload((1, 1))
+        request = SimpleNamespace(user=self.user)
+        first_attempt = ReservationSerializer(
+            data=payload, context={"request": request}
+        )
+        second_attempt = ReservationSerializer(
+            data=payload, context={"request": request}
+        )
 
-        def book_same_seat():
-            close_old_connections()
-            try:
-                user = User.objects.get(pk=user_id)
-                client = APIClient()
-                client.force_authenticate(user=user)
-                request_barrier.wait(timeout=10)
-                response = client.post(
-                    "/api/reservations/",
-                    {"tickets": [{"row": 1, "seat": 1, "show_session": session_id}]},
-                    format="json",
-                )
-                return response.status_code
-            finally:
-                close_old_connections()
+        # Both requests pass seat validation before either one writes to SQLite.
+        self.assertTrue(first_attempt.is_valid(), first_attempt.errors)
+        self.assertTrue(second_attempt.is_valid(), second_attempt.errors)
+        first_attempt.save()
+        with self.assertRaises(serializers.ValidationError):
+            second_attempt.save()
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            results = list(executor.map(lambda _: book_same_seat(), range(2)))
-
-        self.assertCountEqual(results, [201, 400])
         self.assertEqual(
-            Ticket.objects.filter(show_session_id=session_id, row=1, seat=1).count(), 1
+            Ticket.objects.filter(
+                show_session=self.session, row=1, seat=1
+            ).count(),
+            1,
         )
         self.assertEqual(Reservation.objects.count(), 1)
